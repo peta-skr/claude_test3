@@ -73,6 +73,7 @@ class Tab:
         self.root = parse_html(body)
         rules = default_rules() + CSSParser(extract_stylesheets(self.root)).parse()
         style(self.root, rules)
+        self._load_images(self.root)
         self.document = DocumentLayout(self.root, self.width)
         self.document.layout()
         self.links = collect_links(self.root)
@@ -80,6 +81,47 @@ class Tab:
             self.url.host if self.url and self.url.scheme in ("http", "https")
             else str(self.url))
         self.scroll = 0
+
+    def _load_images(self, root: Node) -> None:
+        """Fetch and decode every ``<img src>`` before layout runs."""
+        from .image import decode_image
+
+        cache: dict = {}
+        for node in root:
+            if not (isinstance(node, Element) and node.tag == "img"):
+                continue
+            src = node.attributes.get("src", "").strip()
+            if not src:
+                node.image = None
+                continue
+            if src in cache:
+                node.image = cache[src]
+                continue
+            try:
+                target = self.url.resolve(src) if self.url else URL(src)
+                headers, data = target.request_bytes(timeout=15)
+                bitmap = decode_image(data, headers.get("content-type", ""))
+            except Exception:  # noqa: BLE001 - a broken image must not break layout
+                bitmap = None
+            cache[src] = bitmap
+            node.image = bitmap
+
+    def hit_test(self, x: int, y: int):
+        """Return the link href at content-area coords ``(x, y)``, or None.
+
+        ``y`` is relative to the top of the visible content viewport, so the
+        current scroll offset is added to reach document coordinates.
+        """
+        if not self.document:
+            return None
+        doc_y = y + self.scroll
+        for cmd in self.document.display_list:
+            href = getattr(cmd, "href", None)
+            if href is None:
+                continue
+            if cmd.left <= x <= cmd.right and cmd.top <= doc_y <= cmd.bottom:
+                return href
+        return None
 
     def go_back(self) -> bool:
         if not self.history:
@@ -196,6 +238,21 @@ class Browser:
 
     def scroll_by(self, dy: int) -> None:
         self.tab.scroll_by(dy, self.content_height)
+
+    def link_at(self, x: int, y: int):
+        """Link href at full-window screen coords ``(x, y)`` (chrome-aware)."""
+        if y < CHROME_HEIGHT:
+            return None
+        return self.tab.hit_test(x, y - CHROME_HEIGHT)
+
+    def click(self, x: int, y: int) -> bool:
+        """Follow the link under a screen-space click; True if navigated."""
+        href = self.link_at(x, y)
+        if href is None:
+            return False
+        target = self.tab.url.resolve(href) if self.tab.url else href
+        self.tab.load(target)
+        return True
 
     # -- screenshot ----------------------------------------------------
 

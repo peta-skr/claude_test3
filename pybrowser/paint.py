@@ -51,16 +51,32 @@ class DrawRectOutline(PaintCommand):
 
 
 class DrawText(PaintCommand):
-    def __init__(self, left, top, text: str, font: Font, color: RGB) -> None:
+    def __init__(self, left, top, text: str, font: Font, color: RGB,
+                 href=None) -> None:
         super().__init__(left, top, left + font.measure(text),
                          top + font.line_height)
         self.text = text
         self.font = font
         self.color = color
+        self.href = href
 
     def execute(self, scroll: int, canvas: Canvas) -> None:
         canvas.draw_text(self.left, self.top - scroll, self.text,
                          self.font, self.color)
+
+
+class DrawImage(PaintCommand):
+    def __init__(self, left, top, bitmap, width: int, height: int,
+                 href=None) -> None:
+        super().__init__(left, top, left + width, top + height)
+        self.bitmap = bitmap
+        self.dw = width
+        self.dh = height
+        self.href = href
+
+    def execute(self, scroll: int, canvas: Canvas) -> None:
+        canvas.draw_image(self.bitmap, self.left, self.top - scroll,
+                          self.dw, self.dh)
 
 
 class DrawLine(PaintCommand):

@@ -12,6 +12,10 @@ screenshots.
 *Everything above — the tab strip, the omnibox, and every pixel of the page —
 is drawn by pybrowser itself.*
 
+It renders **images** (through its own PNG decoder) and **tables** too:
+
+![Images and tables](docs/screenshot-features.png)
+
 ## Why "from scratch"?
 
 Chrome is ~30 million lines of C++. pybrowser is a few thousand lines of
@@ -31,11 +35,12 @@ Each stage is a small, self-contained module:
 | `pybrowser/url.py` | Network stack over raw `socket` + `ssl`: `http`, `https` (with `CONNECT`-proxy support), `file`, `data`, `about`; redirects, gzip, chunked transfer |
 | `pybrowser/html_parser.py` | Forgiving HTML tokenizer + DOM tree builder (implicit tags, void elements, entities) |
 | `pybrowser/css.py` | CSS parser, selector matching, specificity, the cascade, and inheritance, plus a user-agent stylesheet |
-| `pybrowser/layout.py` | Block + inline layout engine: the box model, word wrapping, list markers, links |
+| `pybrowser/layout.py` | Block + inline + **table** layout engine: the box model, word wrapping, images, list markers, links |
 | `pybrowser/paint.py` | A display list of drawing commands (decoupled from layout for scrolling) |
 | `pybrowser/fonts.py` | A hand-drawn 5×7 bitmap font for printable ASCII + typographic glyphs |
-| `pybrowser/raster.py` | Software rasterizer + a **from-scratch PNG encoder** (only `zlib` is used) |
-| `pybrowser/browser.py` | Tabs, back/forward history, and Chrome-like window chrome |
+| `pybrowser/raster.py` | Software rasterizer + a **from-scratch PNG encoder** + image compositing (only `zlib` is used) |
+| `pybrowser/image.py` | A **from-scratch PNG decoder** (grayscale/truecolor/palette, alpha, filters) |
+| `pybrowser/browser.py` | Tabs, back/forward history, image loading, hit testing, and Chrome-like window chrome |
 | `pybrowser/cli.py`, `tui.py` | A command line and an interactive terminal browser |
 
 ## Requirements
@@ -119,12 +124,19 @@ canvas.save_png("hi.png")
 - **CSS**: type, class, id, universal, compound (`p.note`) and descendant
   (`#main p`) selectors; specificity and source-order cascade; inheritance;
   inline `style=""`; `font` shorthand; a built-in user-agent stylesheet.
-- **Layout**: block and inline formatting, the box model (margins, padding,
-  borders), word wrapping, `text-align`, `display:none`, list markers,
-  headings, `<pre>`, and relative/`em`/`%` font sizes.
+- **Layout**: block, inline and **table** formatting; the box model (margins,
+  padding, borders); word wrapping; `width`/`height`; `margin:auto` centering;
+  `text-align`; `text-decoration`; `display:none`; list markers; headings;
+  `<hr>`; `<pre>`; and relative/`em`/`%` font sizes.
+- **Images**: `<img>` with a from-scratch **PNG decoder** (grayscale,
+  truecolor, palette, and their alpha variants; all five scanline filters),
+  nearest-neighbour scaling, alpha compositing, and a labelled placeholder for
+  broken/unsupported images.
+- **Interaction**: coordinate **hit testing** maps a click to the link under
+  it (`browser.click(x, y)`), on top of link-by-index navigation.
 - **Rendering**: colored text (named, `#rgb`, `#rrggbb`, `rgb()`), bold and
-  italic, backgrounds, borders, links (underlined), scrolling, and multi-tab
-  window chrome — all rasterized to PNG.
+  italic, backgrounds, borders, underlines, scrolling, and multi-tab window
+  chrome — all rasterized to PNG.
 
 ## Example renders
 
@@ -145,16 +157,17 @@ but pybrowser itself.
 python -m unittest discover -s tests -v
 ```
 
-33 tests cover the parser, CSS cascade, URL handling, the font/rasterizer,
-the layout engine, and the browser/tab/history logic.
+45 tests cover the parser, CSS cascade, URL handling, the font/rasterizer,
+the PNG decoder, image and table layout, hit testing, and the
+browser/tab/history logic.
 
 ## Architecture notes & limitations
 
 pybrowser is a faithful *miniature* of a real browser, not a replacement for
-one. It deliberately stops short of JavaScript, the full CSS box model
-(floats, flexbox, grid), incremental/GPU compositing, and images. The goal is
-a complete, readable rendering pipeline you can hold in your head — from a URL
-string all the way down to individual pixels in a PNG.
+one. It deliberately stops short of JavaScript, advanced CSS layout (floats,
+flexbox, grid), non-PNG image formats, and incremental/GPU compositing. The
+goal is a complete, readable rendering pipeline you can hold in your head —
+from a URL string all the way down to individual pixels in a PNG.
 
 ## Project layout
 

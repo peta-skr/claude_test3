@@ -139,6 +139,46 @@ class Canvas:
                     if bold:
                         self.fill_rect(px + 1, py, scale, scale, color)
 
+    def draw_image(self, bitmap, dx: int, dy: int,
+                   dw: int = 0, dh: int = 0) -> None:
+        """Draw a decoded :class:`pybrowser.image.Bitmap`, scaled to ``dw x dh``.
+
+        Uses nearest-neighbour sampling and simple source-over alpha
+        compositing against whatever is already on the canvas.
+        """
+        sw, sh = bitmap.width, bitmap.height
+        if sw == 0 or sh == 0:
+            return
+        dw = dw or sw
+        dh = dh or sh
+        rgb = bitmap.rgb
+        alpha = bitmap.alpha
+        for oy in range(dh):
+            ty = dy + oy
+            if ty < 0 or ty >= self.height:
+                continue
+            sy = oy * sh // dh
+            for ox in range(dw):
+                tx = dx + ox
+                if tx < 0 or tx >= self.width:
+                    continue
+                sx = ox * sw // dw
+                si = (sy * sw + sx)
+                r, g, b = rgb[si * 3], rgb[si * 3 + 1], rgb[si * 3 + 2]
+                ti = (ty * self.width + tx) * 3
+                if alpha is not None:
+                    a = alpha[si]
+                    if a == 0:
+                        continue
+                    if a != 255:
+                        inv = 255 - a
+                        r = (r * a + self.pixels[ti] * inv) // 255
+                        g = (g * a + self.pixels[ti + 1] * inv) // 255
+                        b = (b * a + self.pixels[ti + 2] * inv) // 255
+                self.pixels[ti] = r
+                self.pixels[ti + 1] = g
+                self.pixels[ti + 2] = b
+
     def blit(self, src: "Canvas", dx: int, dy: int) -> None:
         """Copy the ``src`` framebuffer into this one at ``(dx, dy)``."""
         for sy in range(src.height):

@@ -69,6 +69,57 @@ DEMO_PAGE = """<!doctype html>
 </html>"""
 
 
+def _logo_data_url() -> str:
+    """Draw a small logo with pybrowser's own rasterizer and inline it."""
+    import base64
+
+    from pybrowser.fonts import Font
+    from pybrowser.raster import Canvas
+
+    c = Canvas(96, 64, (250, 250, 250))
+    c.fill_rect(0, 0, 96, 64, (26, 115, 232))
+    c.fill_rect(8, 8, 80, 48, (255, 255, 255))
+    c.fill_rect(16, 16, 26, 32, (234, 67, 53))
+    c.fill_rect(46, 16, 26, 32, (52, 168, 83))
+    c.draw_text(14, 50, "pyb", Font(11, "bold"), (26, 115, 232))
+    return "data:image/png;base64," + base64.b64encode(c.to_png_bytes()).decode()
+
+
+FEATURES_PAGE = """<!doctype html>
+<html>
+<head>
+  <title>pybrowser features</title>
+  <style>
+    body {{ margin: 16px; color: #202124; }}
+    h1 {{ color: #1a73e8; }}
+    h2 {{ color: #188038; }}
+    table {{ width: 100%; margin-top: 10px; }}
+    th {{ background: #e8f0fe; }}
+    td {{ background: #ffffff; }}
+    .num {{ text-align: right; }}
+    .banner {{ background: #f1f6ff; border: 2px solid #1a73e8; padding: 10px; }}
+  </style>
+</head>
+<body>
+  <h1>Now with images &amp; tables</h1>
+  <div class="banner">
+    <p><img src="{logo}" width="64"> Inline images decode through
+       pybrowser's own PNG decoder and composite with alpha.</p>
+  </div>
+  <h2>A real table</h2>
+  <table>
+    <tr><th>Feature</th><th>Module</th><th>Lines</th></tr>
+    <tr><td>PNG decoder</td><td>image.py</td><td class="num">~180</td></tr>
+    <tr><td>Table layout</td><td>layout.py</td><td class="num">~90</td></tr>
+    <tr><td>Hit testing</td><td>browser.py</td><td class="num">~30</td></tr>
+  </table>
+  <hr>
+  <p>Plus <code>width</code>/<code>margin:auto</code> centering,
+     <code>text-decoration</code>, and clickable-link hit testing.</p>
+</body>
+</html>"""
+
+
 def main() -> None:
     os.makedirs(DOCS, exist_ok=True)
 
@@ -98,6 +149,15 @@ def main() -> None:
     home.new_tab("about:home")
     home.screenshot().save_png(os.path.join(DOCS, "screenshot-home.png"))
     print("wrote docs/screenshot-home.png")
+
+    # 4. The features showcase: images + a table, in a full browser window.
+    features_html = FEATURES_PAGE.format(logo=_logo_data_url())
+    feat = Browser(width=760, height=560)
+    feat.new_tab("about:blank")
+    feat.tab.load("data:text/html," + features_html.replace("#", "%23"))
+    feat.tab.title = "pybrowser features"
+    feat.screenshot().save_png(os.path.join(DOCS, "screenshot-features.png"))
+    print("wrote docs/screenshot-features.png")
 
 
 if __name__ == "__main__":

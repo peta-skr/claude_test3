@@ -22,6 +22,9 @@ INHERITED_PROPERTIES = {
     "text-align": "left",
     "line-height": "1.25",
     "white-space": "normal",
+    # Not inherited in real CSS, but propagating it lets ``a { text-decoration:
+    # none }`` reach the anchor's text nodes, which is what authors expect.
+    "text-decoration": "",
 }
 
 
@@ -426,8 +429,9 @@ a { color: #1a0dab; }
 small { font-size: 13px; }
 big { font-size: 20px; }
 title, head, script, style, meta, link { display: none; }
-table, thead, tbody, tr { display: block; }
-td, th { display: inline; }
+table { display: table; margin-top: 8px; margin-bottom: 8px; }
+td, th { padding-top: 4px; padding-bottom: 4px; padding-left: 6px; padding-right: 6px; border: 1px solid #bbbbbb; }
+th { font-weight: bold; }
 """.strip()
 
 

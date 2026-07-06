@@ -51,6 +51,19 @@ def _proxy_for(scheme: str) -> Optional[Tuple[str, int]]:
     return value, 8080
 
 
+def _guess_type(path: str) -> str:
+    """A tiny extension -> MIME map for ``file:`` responses."""
+    lower = path.lower()
+    for ext, mime in (
+        (".png", "image/png"), (".jpg", "image/jpeg"), (".jpeg", "image/jpeg"),
+        (".gif", "image/gif"), (".svg", "image/svg+xml"), (".css", "text/css"),
+        (".html", "text/html"), (".htm", "text/html"), (".txt", "text/plain"),
+    ):
+        if lower.endswith(ext):
+            return mime
+    return "text/html"
+
+
 def _make_ssl_context() -> ssl.SSLContext:
     """Build a TLS context that trusts the system CAs plus any bundle named
     in the standard CA environment variables (so a re-terminating proxy's CA
@@ -156,6 +169,25 @@ class URL:
             return self._request_file()
         return self._request_http(timeout, redirects_left=MAX_REDIRECTS)
 
+    def request_bytes(self, timeout: float = 20.0) -> Tuple[Dict[str, str], bytes]:
+        """Fetch the resource as raw bytes (for images and other binaries)."""
+        if self.scheme == "data":
+            content = self.data_content
+            if getattr(self, "data_base64", False):
+                import base64
+                return {"content-type": self.data_mime}, base64.b64decode(content)
+            return {"content-type": self.data_mime}, unquote(content).encode("utf-8")
+        if self.scheme == "about":
+            headers, body = self._request_about()
+            return headers, body.encode("utf-8")
+        if self.scheme == "file":
+            try:
+                with open(self.path, "rb") as f:
+                    return {"content-type": _guess_type(self.path)}, f.read()
+            except OSError as exc:
+                raise URLError(f"cannot open file {self.path!r}: {exc}") from exc
+        return self._request_http_bytes(timeout, redirects_left=MAX_REDIRECTS)
+
     def _request_data(self) -> Tuple[Dict[str, str], str]:
         content = self.data_content
         if getattr(self, "data_base64", False):
@@ -194,6 +226,24 @@ class URL:
 
         body = self._decode_body(headers, body_bytes)
         return headers, body
+
+    def _request_http_bytes(
+        self, timeout: float, redirects_left: int
+    ) -> Tuple[Dict[str, str], bytes]:
+        raw = self._open_and_send(timeout)
+        headers, body_bytes = self._read_response(raw)
+        status = raw.status_code
+        if status in (301, 302, 303, 307, 308) and "location" in headers:
+            if redirects_left <= 0:
+                raise URLError("too many redirects")
+            target = self.resolve(headers["location"])
+            return target._request_http_bytes(timeout, redirects_left - 1)
+        if headers.get("content-encoding", "").lower() == "gzip":
+            try:
+                body_bytes = gzip.decompress(body_bytes)
+            except OSError:
+                pass
+        return headers, body_bytes
 
     def _open_and_send(self, timeout: float) -> "_RawResponse":
         proxy = _proxy_for(self.scheme)

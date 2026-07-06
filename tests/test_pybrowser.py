@@ -17,8 +17,9 @@ from pybrowser.css import (CSSParser, ClassSelector, DescendantSelector,
 from pybrowser.dom import Element, Text
 from pybrowser.fonts import Font, glyph_rows
 from pybrowser.html_parser import decode_entities, parse_html
-from pybrowser.layout import DocumentLayout, collect_links
-from pybrowser.paint import DrawText
+from pybrowser.image import Bitmap, decode_png
+from pybrowser.layout import DocumentLayout, TableLayout, collect_links
+from pybrowser.paint import DrawImage, DrawLine, DrawText
 from pybrowser.raster import Canvas, parse_color
 from pybrowser.url import URL
 
@@ -260,6 +261,152 @@ class TestBrowser(unittest.TestCase):
         self.assertEqual(b.active, 0)
         b.close_tab(0)
         self.assertEqual(len(b.tabs), 1)
+
+
+class TestImages(unittest.TestCase):
+    def _make_png(self, w=6, h=4, color=(200, 30, 40)):
+        c = Canvas(w, h, (255, 255, 255))
+        c.fill_rect(1, 1, w - 2, h - 2, color)
+        return c
+
+    def test_png_roundtrip(self):
+        c = self._make_png()
+        bm = decode_png(c.to_png_bytes())
+        self.assertIsInstance(bm, Bitmap)
+        self.assertEqual((bm.width, bm.height), (6, 4))
+        # Interior pixel matches the fill colour.
+        self.assertEqual(bm.pixel(2, 2)[:3], (200, 30, 40))
+
+    def test_decode_rejects_non_png(self):
+        self.assertIsNone(decode_png(b"not a png at all"))
+
+    def test_draw_image_alpha_composites(self):
+        # A half-transparent red over white -> pinkish.
+        rgb = bytes([255, 0, 0])
+        bm = Bitmap(1, 1, rgb, alpha=bytes([128]))
+        canvas = Canvas(2, 2, (255, 255, 255))
+        canvas.draw_image(bm, 0, 0, 2, 2)
+        r, g, b = canvas.pixels[0:3]
+        self.assertTrue(r > g and r > b and g > 0)  # blended, not pure red
+
+    def test_img_element_renders(self):
+        c = self._make_png(8, 6, (10, 20, 250))
+        import base64
+        data_url = "data:image/png;base64," + base64.b64encode(
+            c.to_png_bytes()).decode()
+        tab = Tab(width=300)
+        tab.load(f"data:text/html,<body><img src='{data_url}' width='40'></body>")
+        imgs = [cmd for cmd in tab.document.display_list
+                if isinstance(cmd, DrawImage)]
+        self.assertEqual(len(imgs), 1)
+        self.assertEqual(imgs[0].dw, 40)          # honoured the width attr
+        self.assertEqual(imgs[0].dh, 30)          # kept 8:6 aspect ratio
+
+    def test_broken_image_placeholder(self):
+        tab = Tab(width=300)
+        tab.load("data:text/html,<body><img src='nope.png' alt='X' "
+                 "width='60' height='20'></body>")
+        # No DrawImage, but the alt text is painted as a placeholder.
+        self.assertFalse(any(isinstance(c, DrawImage)
+                             for c in tab.document.display_list))
+        self.assertTrue(any(isinstance(c, DrawText) and c.text == "X"
+                            for c in tab.document.display_list))
+
+
+class TestTables(unittest.TestCase):
+    def test_table_produces_grid(self):
+        html = ("<body><table>"
+                "<tr><th>A</th><th>B</th></tr>"
+                "<tr><td>1</td><td>2</td></tr>"
+                "</table></body>")
+        root, doc = render(html, width=400)
+        table = _find_table(doc)
+        self.assertIsNotNone(table)
+        # 4 cells laid out as boxes.
+        self.assertEqual(len(table.children), 4)
+        # Header cells sit on one row, data cells below.
+        tops = sorted({int(c.y) for c in table.children})
+        self.assertEqual(len(tops), 2)
+        # Two columns side by side (distinct x on the first row).
+        first_row = [c for c in table.children if int(c.y) == tops[0]]
+        self.assertEqual(len({int(c.x) for c in first_row}), 2)
+
+    def test_table_cells_span_width(self):
+        html = "<body><table><tr><td>x</td><td>y</td></tr></table></body>"
+        _, doc = render(html, width=300)
+        table = _find_table(doc)
+        right = max(c.x + c.width for c in table.children)
+        left = min(c.x for c in table.children)
+        self.assertGreater(right - left, 150)  # fills much of the width
+
+
+class TestNewCSS(unittest.TestCase):
+    def test_explicit_width_and_margin_auto(self):
+        html = ("<body><div style='width:100px;margin:0 auto'>"
+                "<p>hi</p></div></body>")
+        _, doc = render(html, width=400)
+        div = _find_by_tag(doc, "div")
+        self.assertIsNotNone(div)
+        self.assertEqual(int(div.width), 100)
+        self.assertGreater(div.x, 100)  # centered, not flush left
+
+    def test_text_decoration_none_removes_link_underline(self):
+        html = ("<style>a{text-decoration:none}</style>"
+                "<body><p><a href='#'>x</a></p></body>")
+        _, doc = render(html)
+        self.assertFalse(any(isinstance(c, DrawLine)
+                             for c in doc.display_list))
+
+    def test_hr_draws_a_line(self):
+        _, doc = render("<body><p>a</p><hr><p>b</p></body>")
+        self.assertTrue(any(isinstance(c, DrawLine) for c in doc.display_list))
+
+
+class TestHitTest(unittest.TestCase):
+    def test_hit_test_returns_href(self):
+        tab = Tab(width=400)
+        tab.load("data:text/html,<body><p><a href='about:version'>go</a></p></body>")
+        cmd = next(c for c in tab.document.display_list
+                   if getattr(c, "href", None))
+        cx = (cmd.left + cmd.right) // 2
+        cy = (cmd.top + cmd.bottom) // 2
+        self.assertEqual(tab.hit_test(cx, cy), "about:version")
+        self.assertIsNone(tab.hit_test(9999, 9999))
+
+    def test_browser_click_navigates(self):
+        b = Browser(400, 300)
+        b.new_tab("data:text/html,<body><a href='about:version'>v</a></body>")
+        cmd = next(c for c in b.tab.document.display_list
+                   if getattr(c, "href", None))
+        cx = (cmd.left + cmd.right) // 2
+        cy = (cmd.top + cmd.bottom) // 2 + CHROME_HEIGHT
+        self.assertTrue(b.click(cx, cy))
+        self.assertIn("version", str(b.tab.url))
+
+
+def _find_table(doc):
+    def walk(box):
+        if isinstance(box, TableLayout):
+            return box
+        for child in box.children:
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+    return walk(doc)
+
+
+def _find_by_tag(doc, tag):
+    def walk(box):
+        node = getattr(box, "node", None)
+        if isinstance(node, Element) and node.tag == tag:
+            return box
+        for child in box.children:
+            found = walk(child)
+            if found is not None:
+                return found
+        return None
+    return walk(doc)
 
 
 if __name__ == "__main__":

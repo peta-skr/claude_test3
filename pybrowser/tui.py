@@ -13,6 +13,7 @@ Commands::
     r / reload     reload             links        list links only
     scroll / more  show the next screenful
     save [file]    save a PNG screenshot (default screenshot.png)
+    click <x> <y>  follow the link at window pixel (x, y)
     tabs           list tabs          tab <n>      switch tab
     newtab <url>   open a new tab      close        close current tab
     help           show this help      q / quit     exit
@@ -113,6 +114,16 @@ def run_tui(start_url: str = "about:home", width: int = 100) -> int:
             path = arg or "screenshot.png"
             browser.screenshot().save_png(path)
             print(f"Saved screenshot to {path}")
+        elif cmd_l == "click":
+            parts = arg.split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                if browser.click(int(parts[0]), int(parts[1])):
+                    browser.tab._tui_offset = 0  # type: ignore[attr-defined]
+                    _print_page(browser)
+                else:
+                    print("No link at that position.")
+            else:
+                print("Usage: click <x> <y>")
         elif cmd_l == "tabs":
             for i, t in enumerate(browser.tabs):
                 marker = "*" if i == browser.active else " "
