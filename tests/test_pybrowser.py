@@ -498,6 +498,64 @@ class TestForms(unittest.TestCase):
         self.assertGreater(n_checked, n_plain)
 
 
+class TestFloatInlineBlock(unittest.TestCase):
+    def _boxes_for_tag(self, doc, tag):
+        found = []
+
+        def walk(box):
+            node = getattr(box, "node", None)
+            if isinstance(node, Element) and node.tag == tag:
+                found.append(box)
+            for child in box.children:
+                walk(child)
+        walk(doc)
+        return found
+
+    def test_inline_blocks_sit_side_by_side(self):
+        html = ("<body><div>"
+                "<span style='display:inline-block;width:60px'>A</span>"
+                "<span style='display:inline-block;width:60px'>B</span>"
+                "<span style='display:inline-block;width:60px'>C</span>"
+                "</div></body>")
+        _, doc = render(html, width=400)
+        spans = self._boxes_for_tag(doc, "span")
+        self.assertEqual(len(spans), 3)
+        # Same line (equal y), increasing x.
+        self.assertEqual(len({int(s.y) for s in spans}), 1)
+        xs = sorted(int(s.x) for s in spans)
+        self.assertLess(xs[0], xs[1])
+        self.assertLess(xs[1], xs[2])
+        self.assertEqual(int(spans[0].width), 60)
+
+    def test_inline_block_wraps_when_out_of_room(self):
+        span = "<span style='display:inline-block;width:80px'>x</span>"
+        _, doc = render(f"<body><div>{span * 6}</div></body>", width=200)
+        spans = self._boxes_for_tag(doc, "div")[0]
+        ys = {int(s.y) for s in self._boxes_for_tag(doc, "span")}
+        self.assertGreater(len(ys), 1)  # wrapped onto multiple rows
+
+    def test_float_left_narrows_following_content(self):
+        html = ("<body><div>"
+                "<div style='float:left;width:100px'>F</div>"
+                "<p>text beside the float</p>"
+                "</div></body>")
+        _, doc = render(html, width=400)
+        floated = self._boxes_for_tag(doc, "div")[1]  # inner floated div
+        paras = self._boxes_for_tag(doc, "p")
+        self.assertTrue(paras)
+        # The paragraph starts to the right of the float's right edge.
+        self.assertGreaterEqual(int(paras[0].x), int(floated.x + floated.width) - 2)
+
+    def test_float_right_positions_at_right(self):
+        html = ("<body><div style='width:300px'>"
+                "<div style='float:right;width:80px'>R</div>"
+                "<p>body</p></div></body>")
+        _, doc = render(html, width=400)
+        floated = self._boxes_for_tag(doc, "div")[1]
+        # Right float's right edge is near the container's right side.
+        self.assertGreater(int(floated.x), 150)
+
+
 def _find_table(doc):
     def walk(box):
         if isinstance(box, TableLayout):

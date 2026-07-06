@@ -227,10 +227,16 @@ class BlockLayout(LayoutBox):
         if node.style.get("display") == "none":
             return "block"  # zero children below
         for child in node.children:
-            if isinstance(child, Element) and (
-                child.tag in BLOCK_ELEMENTS
-                or child.style.get("display") == "block"
-            ):
+            if not isinstance(child, Element):
+                continue
+            disp = child.style.get("display", "")
+            # inline / inline-block children never force block formatting;
+            # a floated child is out of flow and doesn't either.
+            if disp in ("inline", "inline-block"):
+                continue
+            if child.style.get("float", "none") in ("left", "right"):
+                return "block"
+            if child.tag in BLOCK_ELEMENTS or disp == "block":
                 return "block"
         if node.children:
             return "inline"
@@ -246,29 +252,94 @@ class BlockLayout(LayoutBox):
             self.height = 2 + self.pb + self.bw
             return
 
+        kids = [c for c in self.node.children if self._renderable(c)]
+        has_float = any(isinstance(c, Element)
+                        and c.style.get("float", "none") in ("left", "right")
+                        for c in kids)
+        if has_float:
+            self._layout_block_with_floats(kids)
+        else:
+            self._layout_block_plain(kids)
+
+        self._maybe_marker()
+        content_bottom = self.content_top()
+        for box in self.children:
+            content_bottom = max(content_bottom, box.y + box.height + box.mb)
+        self.height = (content_bottom - self.y) + self.pb + self.bw
+
+    @staticmethod
+    def _renderable(child: Node) -> bool:
+        if isinstance(child, Element):
+            return child.style.get("display") != "none"
+        if isinstance(child, Text):
+            return not child.text.isspace()
+        return True
+
+    def _new_child(self, node: Node, previous):
+        if isinstance(node, Element) and (
+                node.tag == "table" or node.style.get("display") == "table"):
+            return TableLayout(node, self, previous)
+        return BlockLayout(node, self, previous)
+
+    def _layout_block_plain(self, kids) -> None:
         previous = None
-        for child in self.node.children:
-            if isinstance(child, Element) and child.style.get("display") == "none":
-                continue
-            if isinstance(child, Text) and child.text.isspace():
-                continue
-            if isinstance(child, Element) and (
-                child.tag == "table" or child.style.get("display") == "table"):
-                box = TableLayout(child, self, previous)
-            else:
-                box = BlockLayout(child, self, previous)
+        for child in kids:
+            box = self._new_child(child, previous)
             self.children.append(box)
             box.layout()
             previous = box
 
-        # List item marker.
-        self._maybe_marker()
+    def _layout_block_with_floats(self, kids) -> None:
+        """Simplified floats: floated boxes hug the left/right edge and
+        following block content is narrowed to flow beside them."""
+        floats: List[dict] = []
+        cursor_y = self.content_top()
+        left0 = self.content_x()
+        right0 = self.content_x() + self.content_width()
+        previous = None
+        for child in kids:
+            side = (child.style.get("float", "none")
+                    if isinstance(child, Element) else "none")
+            box = self._new_child(child, previous)
+            box._read_box()
+            if side in ("left", "right"):
+                fw = self._float_width(child, box, right0 - left0)
+                le, re = _edges_at(floats, cursor_y, left0, right0)
+                x = le if side == "left" else re - fw
+                box.x = int(x + box.ml)
+                box.width = int(fw - box.ml - box.mr)
+                box.y = int(cursor_y + box.mt)
+                self._run_child(box)
+                floats.append({"side": side, "left": x, "right": x + fw,
+                               "top": cursor_y,
+                               "bottom": box.y + box.height + box.mb})
+                self.children.append(box)
+                continue
+            # Normal-flow block, narrowed by any float spanning this y.
+            le, re = _edges_at(floats, cursor_y, left0, right0)
+            box.x = int(le + box.ml)
+            box.width = int((re - le) - box.ml - box.mr)
+            box.y = int(cursor_y + box.mt)
+            self._run_child(box)
+            self.children.append(box)
+            cursor_y = box.y + box.height + box.mb
+            previous = box
 
-        content_bottom = self.content_top()
-        if self.children:
-            last = self.children[-1]
-            content_bottom = last.y + last.height + last.mb
-        self.height = (content_bottom - self.y) + self.pb + self.bw
+    @staticmethod
+    def _run_child(box) -> None:
+        """Lay out a child whose x/y/width were assigned manually."""
+        if isinstance(box, TableLayout):
+            box.layout()  # table recomputes its own geometry
+        else:
+            box._layout_contents()
+
+    def _float_width(self, child, box, avail) -> float:
+        explicit = _length(child.style.get("width", ""), avail)
+        if explicit is not None:
+            content_w = explicit
+        else:
+            content_w = min(_preferred_width(child), avail * 6 // 10)
+        return min(avail, content_w + box.pl + box.pr + 2 * box.bw)
 
     def _layout_inline(self) -> None:
         self.cursor_x = self.content_x()
@@ -299,8 +370,38 @@ class BlockLayout(LayoutBox):
             if node.tag in _FORM_WIDGETS:
                 self._widget(node)
                 return
+            if node is not self.node and node.style.get("display") == "inline-block":
+                self._inline_block(node)
+                return
         for child in node.children:
             self._recurse_inline(child)
+
+    def _inline_block(self, node: Element) -> None:
+        """An ``inline-block`` element: a block box that flows inline."""
+        box = BlockLayout(node, self, None)
+        box._read_box()
+        avail = int(self.content_width())
+        explicit = _length(node.style.get("width", ""), avail)
+        if explicit is not None:
+            content_w = explicit
+        else:  # shrink-to-fit, capped so a run of them can still wrap
+            content_w = min(_preferred_width(node), max(1, avail * 6 // 10))
+        width = int(content_w) + box.pl + box.pr + 2 * box.bw
+        width = min(width, avail) if avail else width
+
+        max_x = self.content_x() + self.content_width()
+        if self.cursor_x + width > max_x and self.line:
+            self._flush_line()
+
+        box.x = int(self.cursor_x)
+        box.y = int(self.cursor_y)
+        box.width = width
+        box._layout_contents()
+        # Painted via the layout tree, so register it as a child box.
+        self.children.append(box)
+        self.line.append({"kind": "inlineblock", "x": self.cursor_x,
+                          "w": width, "h": box.height, "box": box})
+        self.cursor_x += width + 2
 
     def _text(self, node: Text) -> None:
         font = _font_for(node)
@@ -474,6 +575,8 @@ class BlockLayout(LayoutBox):
                         DrawLine(px, uy, px + item["w"], uy, color, 1))
             elif item["kind"] == "widget":
                 self._paint_widget_item(px, py, item)
+            elif item["kind"] == "inlineblock":
+                pass  # already laid out at its position and collected via children
             else:  # image
                 self._paint_image_item(px, py, item)
         self.cursor_y += line_height
@@ -629,6 +732,18 @@ def _link_href(node: Node):
             return cur.attributes["href"]
         cur = cur.parent
     return None
+
+
+def _edges_at(floats, y, left0, right0):
+    """Left/right content edges at vertical position ``y`` given active floats."""
+    left, right = left0, right0
+    for f in floats:
+        if f["top"] <= y < f["bottom"]:
+            if f["side"] == "left":
+                left = max(left, f["right"])
+            else:
+                right = min(right, f["left"])
+    return left, right
 
 
 def _element_text(node) -> str:
