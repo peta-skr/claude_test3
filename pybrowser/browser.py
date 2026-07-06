@@ -50,6 +50,8 @@ class Tab:
         self.links: List[Tuple[str, str]] = []
         self.history: List[URL] = []
         self.future: List[URL] = []
+        self.javascript_enabled = True
+        self.js_console: List[str] = []
 
     # -- navigation ----------------------------------------------------
 
@@ -71,6 +73,8 @@ class Tab:
 
     def _render_pipeline(self, body: str) -> None:
         self.root = parse_html(body)
+        if self.javascript_enabled:
+            self._run_scripts(self.root)
         rules = default_rules() + CSSParser(extract_stylesheets(self.root)).parse()
         style(self.root, rules)
         self._load_images(self.root)
@@ -81,6 +85,46 @@ class Tab:
             self.url.host if self.url and self.url.scheme in ("http", "https")
             else str(self.url))
         self.scroll = 0
+
+    def _run_scripts(self, root: Node) -> None:
+        """Execute inline and external ``<script>`` elements in order."""
+        from .js import Interpreter
+        from .js_dom import Document, _Namespace
+
+        scripts = [n for n in root
+                   if isinstance(n, Element) and n.tag == "script"]
+        if not scripts:
+            return
+        document = Document(root, None)
+        window = _Namespace({"document": document})
+        interp = Interpreter({"document": document, "window": window})
+        self._install_window_globals(interp, window)
+        for node in scripts:
+            code = self._script_source(node)
+            if not code.strip():
+                continue
+            try:
+                interp.run(code)
+            except Exception as exc:  # noqa: BLE001 - one bad script must not kill the page
+                self.js_console.append(f"[script error] {type(exc).__name__}: {exc}")
+        self.js_console.extend(interp.console_output)
+
+    def _install_window_globals(self, interp, window) -> None:
+        from .js import UNDEFINED, _bi, invoke, to_str
+        g = interp.global_scope
+        g.declare("alert", _bi(lambda *a: self.js_console.append(
+            "[alert] " + " ".join(to_str(x) for x in a)) or UNDEFINED))
+        # No event loop: timers fire immediately.
+        g.declare("setTimeout", _bi(lambda fn=None, *_: (
+            invoke(fn, []) if fn is not None else UNDEFINED)))
+        g.declare("setInterval", _bi(lambda *a: UNDEFINED))
+
+    @staticmethod
+    def _script_source(node: Element) -> str:
+        src = node.attributes.get("src", "").strip()
+        if src:
+            return ""  # external scripts are skipped in this offline engine
+        return "".join(c.text for c in node.children if isinstance(c, Text))
 
     def _load_images(self, root: Node) -> None:
         """Fetch and decode every ``<img src>`` before layout runs."""

@@ -22,6 +22,10 @@ VOID_ELEMENTS = {
 # The document skeleton, in the order the tree builder expects it.
 HEAD_TAGS = {"base", "link", "meta", "title", "style", "script"}
 
+# Elements whose content is raw text (no nested markup): a "<" inside them is
+# literal.  script/style keep entities verbatim; textarea/title decode them.
+RAW_TEXT_ELEMENTS = {"script", "style", "textarea", "title"}
+
 # Opening one of these implicitly closes an already-open element of the same
 # tag (the "implied end tag" behaviour that lets ``<p>a<p>b`` produce two
 # sibling paragraphs rather than nested ones).
@@ -97,32 +101,48 @@ class HTMLParser:
 
     def parse(self) -> Element:
         text_buffer: List[str] = []
-        in_tag = False
         i = 0
         n = len(self.body)
+        lower = self.body.lower()
         while i < n:
             c = self.body[i]
-            if c == "<":
-                in_tag = True
-                if text_buffer:
-                    self.add_text("".join(text_buffer))
-                    text_buffer = []
-            elif c == ">":
-                in_tag = False
-                tag_source = "".join(text_buffer)
-                text_buffer = []
-                # Skip comments and CDATA-ish constructs cleanly.
-                if tag_source.startswith("!--"):
-                    # If the comment wasn't closed within this chunk, drop it.
-                    pass
-                elif tag_source.startswith("!"):
-                    pass  # <!doctype ...> and similar declarations
-                else:
-                    self.add_tag(tag_source)
-            else:
+            if c != "<":
                 text_buffer.append(c)
-            i += 1
-        if not in_tag and text_buffer:
+                i += 1
+                continue
+            gt = self.body.find(">", i)
+            if gt == -1:
+                text_buffer.append(c)
+                i += 1
+                continue
+            if text_buffer:
+                self.add_text("".join(text_buffer))
+                text_buffer = []
+            tag_source = self.body[i + 1:gt]
+            if tag_source.startswith("!--"):
+                end = self.body.find("-->", i)
+                i = (end + 3) if end != -1 else gt + 1
+                continue
+            if tag_source.startswith("!"):
+                i = gt + 1  # <!doctype ...> and similar declarations
+                continue
+            self.add_tag(tag_source)
+            i = gt + 1
+            # Raw-text elements (script/style/textarea/title) take their
+            # content literally -- a "<" inside them is not a tag.
+            open_el = self.unfinished[-1] if self.unfinished else None
+            if (open_el is not None and open_el.tag in RAW_TEXT_ELEMENTS
+                    and not tag_source.startswith("/")
+                    and not tag_source.endswith("/")):
+                tag = open_el.tag
+                close = "</" + tag
+                cidx = lower.find(close, i)
+                raw = self.body[i:cidx] if cidx != -1 else self.body[i:]
+                i = cidx if cidx != -1 else n
+                if raw:
+                    text = raw if tag in ("script", "style") else decode_entities(raw)
+                    open_el.children.append(Text(text, open_el))
+        if text_buffer:
             self.add_text("".join(text_buffer))
         return self.finish()
 

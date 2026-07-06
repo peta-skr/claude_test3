@@ -384,6 +384,80 @@ class TestHitTest(unittest.TestCase):
         self.assertIn("version", str(b.tab.url))
 
 
+class TestJavaScript(unittest.TestCase):
+    def _run(self, src):
+        from pybrowser.js import Interpreter, to_str
+        it = Interpreter()
+        result = it.run(src)
+        return it.console_output, to_str(result)
+
+    def test_arithmetic_and_strings(self):
+        out, _ = self._run('console.log(1+2*3, "a"+"b", 10%3)')
+        self.assertEqual(out, ["7 ab 1"])
+
+    def test_control_flow_and_functions(self):
+        out, _ = self._run(
+            "function f(n){var s=0; for(var i=1;i<=n;i++){s+=i} return s;}"
+            "console.log(f(5), f(10));")
+        self.assertEqual(out, ["15 55"])
+
+    def test_recursion(self):
+        out, _ = self._run(
+            "function fib(n){return n<2?n:fib(n-1)+fib(n-2);}"
+            "console.log(fib(12));")
+        self.assertEqual(out, ["144"])
+
+    def test_arrays_and_objects(self):
+        out, _ = self._run(
+            'var a=[1,2,3]; a.push(4);'
+            'var o={x:10}; o.y=20;'
+            'console.log(a.map(function(v){return v*v}).join(","), o.x+o.y);')
+        self.assertEqual(out, ["1,4,9,16 30"])
+
+    def test_dom_text_content_mutation(self):
+        tab = Tab(width=400)
+        tab.load('data:text/html,<body><h1 id="t">old</h1>'
+                 '<script>document.getElementById("t").textContent="new";</script>'
+                 '</body>')
+        texts = [c.text for c in tab.document.display_list
+                 if isinstance(c, DrawText)]
+        self.assertIn("new", texts)
+        self.assertNotIn("old", texts)
+
+    def test_dom_create_and_append(self):
+        tab = Tab(width=400)
+        tab.load('data:text/html,<body><ul id="l"></ul><script>'
+                 'var l=document.getElementById("l");'
+                 'for(var i=0;i<3;i++){var li=document.createElement("li");'
+                 'li.textContent="row"+i; l.appendChild(li);}'
+                 '</script></body>')
+        texts = [c.text for c in tab.document.display_list
+                 if isinstance(c, DrawText)]
+        self.assertIn("row0", texts)
+        self.assertIn("row2", texts)
+
+    def test_script_error_is_isolated(self):
+        tab = Tab(width=400)
+        tab.load('data:text/html,<body><p>ok</p>'
+                 '<script>this is not ( valid js ]</script></body>')
+        # Page still renders; the error is captured, not raised.
+        texts = [c.text for c in tab.document.display_list
+                 if isinstance(c, DrawText)]
+        self.assertIn("ok", texts)
+        self.assertTrue(any("error" in m.lower() for m in tab.js_console))
+
+    def test_querySelector_uses_css_engine(self):
+        from pybrowser.js import Interpreter, to_str
+        from pybrowser.js_dom import Document
+        from pybrowser.html_parser import parse_html
+        root = parse_html("<body><p class='x'>a</p><p class='x'>b</p>"
+                          "<div id='d'>c</div></body>")
+        it = Interpreter({"document": Document(root, None)})
+        it.run('console.log(document.querySelectorAll(".x").length,'
+               'document.querySelector("#d").textContent);')
+        self.assertEqual(it.console_output, ["2 c"])
+
+
 def _find_table(doc):
     def walk(box):
         if isinstance(box, TableLayout):

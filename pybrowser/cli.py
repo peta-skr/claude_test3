@@ -53,6 +53,10 @@ def _text(args: argparse.Namespace) -> int:
         for i, (href, text) in enumerate(tab.links):
             label = text or href
             print(f"  [{i}] {label}  ->  {href}")
+    if tab.js_console:
+        print("\nConsole:")
+        for line in tab.js_console:
+            print(f"  {line}")
     return 0
 
 
