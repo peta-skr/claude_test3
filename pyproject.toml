@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybrowser"
+version = "0.1.0"
+description = "A web browser built from scratch on the Python standard library"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["browser", "html", "css", "layout", "rendering", "from-scratch"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
+dependencies = []
+
+[project.scripts]
+pybrowser = "pybrowser.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/peta-skr/claude_test3"
+
+[tool.setuptools]
+packages = ["pybrowser"]

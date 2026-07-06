@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.venv/
+venv/
+# Local render output (the tracked demo images live in docs/)
+/*.png
+/page.png
+/screenshot.png
