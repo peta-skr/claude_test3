@@ -458,6 +458,46 @@ class TestJavaScript(unittest.TestCase):
         self.assertEqual(it.console_output, ["2 c"])
 
 
+class TestForms(unittest.TestCase):
+    def _texts(self, doc):
+        return [c.text for c in doc.display_list if isinstance(c, DrawText)]
+
+    def test_text_input_shows_value(self):
+        _, doc = render("<body><input type='text' value='hello'></body>")
+        self.assertIn("hello", self._texts(doc))
+
+    def test_placeholder_when_empty(self):
+        _, doc = render("<body><input type='text' placeholder='name'></body>")
+        self.assertIn("name", self._texts(doc))
+
+    def test_password_masks_value(self):
+        _, doc = render("<body><input type='password' value='abcd'></body>")
+        joined = "".join(self._texts(doc))
+        self.assertNotIn("abcd", joined)
+        self.assertIn("•" * 4, joined)
+
+    def test_button_label(self):
+        _, doc = render("<body><button>Click me</button></body>")
+        self.assertIn("Click me", self._texts(doc))
+        _, doc2 = render("<body><input type='submit' value='Go'></body>")
+        self.assertIn("Go", self._texts(doc2))
+
+    def test_select_shows_selected_option(self):
+        _, doc = render("<body><select><option>A</option>"
+                        "<option selected>B</option></select></body>")
+        self.assertIn("B", self._texts(doc))
+        self.assertNotIn("A", self._texts(doc))
+
+    def test_checkbox_checked_draws_fill(self):
+        # A checked checkbox has an extra inner DrawRect vs an unchecked one.
+        from pybrowser.paint import DrawRect
+        _, checked = render("<body><input type='checkbox' checked></body>")
+        _, plain = render("<body><input type='checkbox'></body>")
+        n_checked = sum(isinstance(c, DrawRect) for c in checked.display_list)
+        n_plain = sum(isinstance(c, DrawRect) for c in plain.display_list)
+        self.assertGreater(n_checked, n_plain)
+
+
 def _find_table(doc):
     def walk(box):
         if isinstance(box, TableLayout):

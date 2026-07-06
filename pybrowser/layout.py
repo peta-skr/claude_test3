@@ -20,6 +20,10 @@ from .paint import (DrawImage, DrawLine, DrawRect, DrawRectOutline, DrawText,
                     PaintCommand)
 from .raster import RGB, parse_color
 
+# Elements that flow inline but are laid out as a single atomic box.
+_ATOMIC_INLINE = {"img", "input", "button", "textarea", "select"}
+_FORM_WIDGETS = {"input", "button", "textarea", "select"}
+
 BLOCK_ELEMENTS = {
     "html", "body", "article", "section", "nav", "aside", "h1", "h2", "h3",
     "h4", "h5", "h6", "header", "footer", "address", "p", "hr", "pre",
@@ -218,8 +222,8 @@ class BlockLayout(LayoutBox):
         node = self.node
         if isinstance(node, Text):
             return "inline"
-        if isinstance(node, Element) and node.tag == "img":
-            return "inline"  # a replaced element flows like inline content
+        if isinstance(node, Element) and node.tag in _ATOMIC_INLINE:
+            return "inline"  # replaced/widget elements flow like inline content
         if node.style.get("display") == "none":
             return "block"  # zero children below
         for child in node.children:
@@ -292,6 +296,9 @@ class BlockLayout(LayoutBox):
             if node.tag == "img":
                 self._image(node)
                 return
+            if node.tag in _FORM_WIDGETS:
+                self._widget(node)
+                return
         for child in node.children:
             self._recurse_inline(child)
 
@@ -357,6 +364,88 @@ class BlockLayout(LayoutBox):
                           "alt": node.attributes.get("alt", "")})
         self.cursor_x += w + 2
 
+    def _widget(self, node: Element) -> None:
+        """Lay out a form control (input/button/textarea/select) as one box."""
+        font = _font_for(node)
+        tag = node.tag
+        typ = node.attributes.get("type", "text").lower() if tag == "input" else tag
+        spec: dict = {"kind": "widget", "font": font, "node": node}
+
+        if tag == "input" and typ in ("checkbox", "radio"):
+            spec.update(subtype=typ, w=14, h=14,
+                        checked="checked" in node.attributes)
+        elif (tag == "input" and typ in ("submit", "reset", "button")) or tag == "button":
+            label = (node.attributes.get("value")
+                     or _element_text(node) or typ.capitalize())
+            spec.update(subtype="button", label=label,
+                        w=font.measure(label) + 16, h=font.line_height + 6)
+        elif tag == "textarea":
+            cols = _attr_int(node, "cols", 24)
+            rows = _attr_int(node, "rows", 2)
+            spec.update(subtype="textarea", text=_element_text(node),
+                        w=cols * font.char_width + 10,
+                        h=rows * font.line_height + 8)
+        elif tag == "select":
+            options = [c for c in node.children
+                       if isinstance(c, Element) and c.tag == "option"]
+            selected = next((o for o in options if "selected" in o.attributes),
+                            options[0] if options else None)
+            label = _element_text(selected) if selected is not None else ""
+            spec.update(subtype="select", label=label,
+                        w=font.measure(label) + 26, h=font.line_height + 6)
+        else:  # text-like input
+            value = node.attributes.get("value", "")
+            placeholder = node.attributes.get("placeholder", "")
+            size = _attr_int(node, "size", 20)
+            if typ == "password":
+                display, is_placeholder = "•" * len(value), False
+            elif value:
+                display, is_placeholder = value, False
+            else:
+                display, is_placeholder = placeholder, True
+            spec.update(subtype="text", text=display, placeholder=is_placeholder,
+                        w=size * font.char_width + 10, h=font.line_height + 6)
+
+        w = min(int(spec["w"]), int(self.content_width()) or int(spec["w"]))
+        spec["w"] = w
+        max_x = self.content_x() + self.content_width()
+        if self.cursor_x + w > max_x and self.line:
+            self._flush_line()
+        spec["x"] = self.cursor_x
+        self.line.append(spec)
+        self.cursor_x += w + 2
+
+    def _paint_widget_item(self, px: int, py: int, item: dict) -> None:
+        w, h = int(item["w"]), int(item["h"])
+        font = item["font"]
+        subtype = item["subtype"]
+        if subtype in ("checkbox", "radio"):
+            self.display_list.append(DrawRect(px, py, px + w, py + h, (255, 255, 255)))
+            self.display_list.append(
+                DrawRectOutline(px, py, px + w, py + h, (120, 120, 120), 1))
+            if item.get("checked"):
+                self.display_list.append(
+                    DrawRect(px + 3, py + 3, px + w - 3, py + h - 3, (40, 110, 220)))
+        elif subtype == "button":
+            self.display_list.append(DrawRect(px, py, px + w, py + h, (225, 227, 231)))
+            self.display_list.append(
+                DrawRectOutline(px, py, px + w, py + h, (150, 153, 158), 1))
+            self.display_list.append(
+                DrawText(px + 8, py + 3, item["label"], font, (32, 33, 36)))
+        else:  # text, textarea, select
+            self.display_list.append(DrawRect(px, py, px + w, py + h, (255, 255, 255)))
+            self.display_list.append(
+                DrawRectOutline(px, py, px + w, py + h, (150, 153, 158), 1))
+            text = item.get("text") or item.get("label", "")
+            color = (150, 150, 150) if item.get("placeholder") else (32, 33, 36)
+            max_chars = max(0, (w - 8) // font.char_width)
+            self.display_list.append(
+                DrawText(px + 4, py + 3, text[:max_chars], font, color))
+            if subtype == "select":
+                ay = py + h // 2
+                self.display_list.append(
+                    DrawText(px + w - 12, py + 3, "▼", Font(11), (90, 90, 90)))
+
     def _flush_line(self) -> None:
         if not self.line:
             self.cursor_x = self.content_x()
@@ -383,6 +472,8 @@ class BlockLayout(LayoutBox):
                     uy = py + font.ascent + 1
                     self.display_list.append(
                         DrawLine(px, uy, px + item["w"], uy, color, 1))
+            elif item["kind"] == "widget":
+                self._paint_widget_item(px, py, item)
             else:  # image
                 self._paint_image_item(px, py, item)
         self.cursor_y += line_height
@@ -538,6 +629,18 @@ def _link_href(node: Node):
             return cur.attributes["href"]
         cur = cur.parent
     return None
+
+
+def _element_text(node) -> str:
+    """Concatenated text of an element's descendants (for labels/options)."""
+    if node is None:
+        return ""
+    return "".join(n.text for n in node if isinstance(n, Text)).strip()
+
+
+def _attr_int(node: Element, name: str, default: int) -> int:
+    value = node.attributes.get(name, "").strip()
+    return int(value) if value.isdigit() else default
 
 
 def _attr_px(node: Element, name: str):
