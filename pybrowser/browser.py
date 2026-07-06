@@ -39,8 +39,11 @@ C_BUTTON_DISABLED = (190, 193, 198)
 class Tab:
     """A single browsing context with its own history and scroll offset."""
 
-    def __init__(self, width: int = 800) -> None:
+    def __init__(self, width: int = 800, session=None) -> None:
+        from .session import Session
+
         self.width = width
+        self.session = session if session is not None else Session()
         self.url: Optional[URL] = None
         self.root: Optional[Node] = None
         self.document: Optional[DocumentLayout] = None
@@ -59,7 +62,7 @@ class Tab:
         if isinstance(url, str):
             url = URL(url)
         try:
-            _headers, body = url.request()
+            _headers, body = url.request(session=self.session)
             self.status = ""
         except Exception as exc:  # noqa: BLE001 - a bad page must never crash the UI
             body = _error_page(url, exc)
@@ -143,7 +146,7 @@ class Tab:
                 continue
             try:
                 target = self.url.resolve(src) if self.url else URL(src)
-                headers, data = target.request_bytes(timeout=15)
+                headers, data = target.request_bytes(timeout=15, session=self.session)
                 bitmap = decode_image(data, headers.get("content-type", ""))
             except Exception:  # noqa: BLE001 - a broken image must not break layout
                 bitmap = None
@@ -244,10 +247,13 @@ class Browser:
     """Owns a set of tabs and renders the surrounding window chrome."""
 
     def __init__(self, width: int = 800, height: int = 600) -> None:
+        from .session import Session
+
         self.width = width
         self.height = height
         self.tabs: List[Tab] = []
         self.active = 0
+        self.session = Session()  # cookies + cache shared by all tabs
 
     @property
     def content_height(self) -> int:
@@ -260,7 +266,7 @@ class Browser:
         return self.tabs[self.active]
 
     def new_tab(self, url: str = "about:blank") -> Tab:
-        tab = Tab(width=self.width)
+        tab = Tab(width=self.width, session=self.session)
         tab.load(url)
         self.tabs.append(tab)
         self.active = len(self.tabs) - 1

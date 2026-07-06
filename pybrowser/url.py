@@ -159,7 +159,8 @@ class URL:
 
     # -- fetching ------------------------------------------------------
 
-    def request(self, timeout: float = 20.0) -> Tuple[Dict[str, str], str]:
+    def request(self, timeout: float = 20.0, session=None
+                ) -> Tuple[Dict[str, str], str]:
         """Fetch the resource, following redirects. Returns (headers, body)."""
         if self.scheme == "data":
             return self._request_data()
@@ -167,9 +168,11 @@ class URL:
             return self._request_about()
         if self.scheme == "file":
             return self._request_file()
-        return self._request_http(timeout, redirects_left=MAX_REDIRECTS)
+        headers, raw = self._fetch_http(timeout, MAX_REDIRECTS, session)
+        return headers, self._decode_body(headers, raw)
 
-    def request_bytes(self, timeout: float = 20.0) -> Tuple[Dict[str, str], bytes]:
+    def request_bytes(self, timeout: float = 20.0, session=None
+                      ) -> Tuple[Dict[str, str], bytes]:
         """Fetch the resource as raw bytes (for images and other binaries)."""
         if self.scheme == "data":
             content = self.data_content
@@ -186,7 +189,7 @@ class URL:
                     return {"content-type": _guess_type(self.path)}, f.read()
             except OSError as exc:
                 raise URLError(f"cannot open file {self.path!r}: {exc}") from exc
-        return self._request_http_bytes(timeout, redirects_left=MAX_REDIRECTS)
+        return self._fetch_http(timeout, MAX_REDIRECTS, session)
 
     def _request_data(self) -> Tuple[Dict[str, str], str]:
         content = self.data_content
@@ -210,42 +213,41 @@ class URL:
         except OSError as exc:
             raise URLError(f"cannot open file {self.path!r}: {exc}") from exc
 
-    def _request_http(
-        self, timeout: float, redirects_left: int
-    ) -> Tuple[Dict[str, str], str]:
-        raw = self._open_and_send(timeout)
+    def _fetch_http(self, timeout: float, redirects_left: int, session
+                    ) -> Tuple[Dict[str, str], bytes]:
+        """Unified HTTP(S) fetch: cache lookup, cookies, redirects, gzip."""
+        cache_key = str(self)
+        if session is not None and self.scheme in DEFAULT_PORTS:
+            cached = session.cache.get(cache_key)
+            if cached is not None:
+                return cached[0], cached[1]
+
+        raw = self._open_and_send(timeout, session)
         headers, body_bytes = self._read_response(raw)
 
-        status = raw.status_code
-        if status in (301, 302, 303, 307, 308) and "location" in headers:
-            if redirects_left <= 0:
-                raise URLError("too many redirects")
-            location = headers["location"]
-            target = self.resolve(location)
-            return target._request_http(timeout, redirects_left - 1)
+        if session is not None:
+            set_cookies = headers.get("set-cookie")
+            if set_cookies:
+                session.cookies.set_from_headers(self, set_cookies)
 
-        body = self._decode_body(headers, body_bytes)
-        return headers, body
-
-    def _request_http_bytes(
-        self, timeout: float, redirects_left: int
-    ) -> Tuple[Dict[str, str], bytes]:
-        raw = self._open_and_send(timeout)
-        headers, body_bytes = self._read_response(raw)
         status = raw.status_code
         if status in (301, 302, 303, 307, 308) and "location" in headers:
             if redirects_left <= 0:
                 raise URLError("too many redirects")
             target = self.resolve(headers["location"])
-            return target._request_http_bytes(timeout, redirects_left - 1)
+            return target._fetch_http(timeout, redirects_left - 1, session)
+
         if headers.get("content-encoding", "").lower() == "gzip":
             try:
                 body_bytes = gzip.decompress(body_bytes)
             except OSError:
                 pass
+
+        if session is not None:
+            session.cache.put(cache_key, headers, body_bytes)
         return headers, body_bytes
 
-    def _open_and_send(self, timeout: float) -> "_RawResponse":
+    def _open_and_send(self, timeout: float, session=None) -> "_RawResponse":
         proxy = _proxy_for(self.scheme)
         s = socket.socket(
             family=socket.AF_INET, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
@@ -275,6 +277,10 @@ class URL:
             "Accept-Encoding: gzip",
             "Accept: text/html,application/xhtml+xml,*/*",
         ]
+        if session is not None:
+            cookie_header = session.cookies.header_for(self)
+            if cookie_header:
+                request_lines.append(f"Cookie: {cookie_header}")
         request = "\r\n".join(request_lines) + "\r\n\r\n"
         s.send(request.encode("utf-8"))
         return _RawResponse(s)
@@ -396,6 +402,7 @@ class _RawResponse:
             self.status_code = int(parts[1])
             self.status_text = parts[2] if len(parts) > 2 else ""
         headers: Dict[str, str] = {}
+        set_cookies: list = []
         while True:
             line = self._read_until(b"\r\n")
             if line is None or line == b"":
@@ -403,7 +410,14 @@ class _RawResponse:
             text = line.decode("iso-8859-1")
             if ":" in text:
                 key, value = text.split(":", 1)
-                headers[key.strip().lower()] = value.strip()
+                key = key.strip().lower()
+                value = value.strip()
+                if key == "set-cookie":
+                    set_cookies.append(value)  # may appear multiple times
+                else:
+                    headers[key] = value
+        if set_cookies:
+            headers["set-cookie"] = set_cookies
         return headers
 
     def read_body(self, length: Optional[int]) -> bytes:

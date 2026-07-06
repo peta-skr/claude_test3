@@ -14,13 +14,18 @@ pieces every browser needs:
 
 __all__ = [
     "url",
+    "session",
     "dom",
     "html_parser",
     "css",
+    "js",
+    "js_dom",
     "layout",
     "paint",
     "raster",
     "fonts",
+    "image",
+    "jpeg",
     "browser",
 ]
 

@@ -556,6 +556,95 @@ class TestFloatInlineBlock(unittest.TestCase):
         self.assertGreater(int(floated.x), 150)
 
 
+class TestJPEG(unittest.TestCase):
+    def test_roundtrip_flat_image(self):
+        from pybrowser.jpeg import decode_jpeg, encode_canvas
+        c = Canvas(16, 16, (255, 255, 255))
+        c.fill_rect(0, 0, 8, 16, (200, 40, 40))
+        c.fill_rect(8, 0, 8, 16, (40, 90, 200))
+        jpg = encode_canvas(c, quality=90)
+        self.assertEqual(jpg[:2], b"\xff\xd8")   # SOI
+        self.assertEqual(jpg[-2:], b"\xff\xd9")  # EOI
+        bm = decode_jpeg(jpg)
+        self.assertEqual((bm.width, bm.height), (16, 16))
+        # Flat colours survive quantization almost exactly.
+        for x, expect in ((2, (200, 40, 40)), (13, (40, 90, 200))):
+            got = bm.pixel(x, 8)[:3]
+            self.assertTrue(all(abs(a - b) <= 6 for a, b in zip(got, expect)),
+                            f"{got} vs {expect}")
+
+    def test_decode_image_dispatches_to_jpeg(self):
+        from pybrowser.image import decode_image
+        from pybrowser.jpeg import encode_canvas
+        c = Canvas(8, 8, (30, 200, 120))
+        bm = decode_image(encode_canvas(c, quality=85))
+        self.assertIsNotNone(bm)
+        self.assertEqual((bm.width, bm.height), (8, 8))
+
+    def test_reject_non_jpeg(self):
+        from pybrowser.jpeg import decode_jpeg
+        self.assertIsNone(decode_jpeg(b"\x00\x01not jpeg"))
+
+    def test_img_tag_renders_jpeg(self):
+        import base64
+        from pybrowser.jpeg import encode_canvas
+        c = Canvas(16, 16, (220, 60, 60))
+        url = "data:image/jpeg;base64," + base64.b64encode(
+            encode_canvas(c, 85)).decode()
+        tab = Tab(width=200)
+        tab.load(f"data:text/html,<body><img src='{url}' width='32'></body>")
+        self.assertTrue(any(isinstance(cmd, DrawImage)
+                            for cmd in tab.document.display_list))
+
+
+class TestSession(unittest.TestCase):
+    def test_cookie_path_and_secure_scoping(self):
+        from pybrowser.session import CookieJar
+        jar = CookieJar()
+        u = URL("https://example.com/app/page")
+        jar.set_from_headers(u, ["sid=abc; Path=/; Secure",
+                                 "theme=dark; Path=/app"])
+        self.assertEqual(jar.header_for(u), "sid=abc; theme=dark")
+        # Secure cookie is withheld from plain HTTP.
+        self.assertEqual(jar.header_for(URL("http://example.com/app/x")),
+                         "theme=dark")
+        # Path scoping: /other doesn't get the /app cookie.
+        self.assertEqual(jar.header_for(URL("https://example.com/other")),
+                         "sid=abc")
+
+    def test_cookie_domain_match(self):
+        from pybrowser.session import CookieJar
+        jar = CookieJar()
+        jar.set_from_headers(URL("https://example.com/"),
+                             ["a=1; Domain=example.com"])
+        self.assertEqual(jar.header_for(URL("https://www.example.com/")), "a=1")
+        self.assertIsNone(jar.header_for(URL("https://other.test/")))
+
+    def test_cookie_expiry_deletes(self):
+        from pybrowser.session import CookieJar
+        jar = CookieJar()
+        u = URL("https://example.com/")
+        jar.set_from_headers(u, ["a=1"])
+        jar.set_from_headers(u, ["a=1; Max-Age=0"], now=100)
+        self.assertIsNone(jar.header_for(u))
+
+    def test_cache_put_get_and_no_store(self):
+        from pybrowser.session import Cache
+        cache = Cache()
+        cache.put("http://x/", {"content-type": "text/html"}, b"hi")
+        self.assertIn("http://x/", cache)
+        self.assertEqual(cache.get("http://x/")[1], b"hi")
+        self.assertEqual(cache.hits, 1)
+        cache.put("http://y/", {"cache-control": "no-store"}, b"secret")
+        self.assertNotIn("http://y/", cache)
+
+    def test_browser_shares_session_across_tabs(self):
+        b = Browser(320, 240)
+        b.new_tab("about:home")
+        b.new_tab("about:version")
+        self.assertIs(b.tabs[0].session, b.tabs[1].session)
+
+
 def _find_table(doc):
     def walk(box):
         if isinstance(box, TableLayout):

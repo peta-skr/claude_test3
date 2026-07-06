@@ -193,7 +193,11 @@ def decode_png(data: bytes) -> Optional[Bitmap]:
 
 
 def decode_image(data: bytes, content_type: str = "") -> Optional[Bitmap]:
-    """Dispatch by magic bytes / content type. Only PNG is implemented."""
-    if data[:8] == PNG_SIGNATURE or "png" in content_type.lower():
+    """Dispatch by magic bytes / content type to the PNG or JPEG decoder."""
+    ctype = content_type.lower()
+    if data[:8] == PNG_SIGNATURE or "png" in ctype:
         return decode_png(data)
+    if data[:2] == b"\xff\xd8" or "jpeg" in ctype or "jpg" in ctype:
+        from .jpeg import decode_jpeg
+        return decode_jpeg(data)
     return None
